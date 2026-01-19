@@ -1,6 +1,21 @@
+import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import yaml
+
+# ============================================================
+# OPTIONAL CONFIG LOADING (CLOUD SAFE)
+# ============================================================
+CONFIG_PATH = "config.yaml"
+
+config = {}
+if os.path.exists(CONFIG_PATH):
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            config = yaml.safe_load(f) or {}
+    except Exception:
+        config = {}
 
 
 # ============================================================
