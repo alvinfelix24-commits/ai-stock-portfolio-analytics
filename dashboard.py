@@ -1,93 +1,141 @@
-# dashboard.py — Explainable AI View
-
 import streamlit as st
 import json
 import os
-from main import analyze_stock, load_nse_universe
+from datetime import datetime
 
-st.set_page_config(page_title="Explainable AI Stocks", layout="wide")
+from main import analyze_stock  # uses your existing main.py logic
 
+# ============================================================
+# APP CONFIG
+# ============================================================
+st.set_page_config(
+    page_title="AI Stock Portfolio Analytics",
+    page_icon="🧠",
+    layout="wide"
+)
+
+# ============================================================
+# WATCHLIST STORAGE (Persistent)
+# ============================================================
 WATCHLIST_FILE = "watchlist.json"
+
+DEFAULT_WATCHLIST = [
+    "RELIANCE.NS",
+    "TCS.NS",
+    "INFY.NS"
+]
 
 
 def load_watchlist():
     if not os.path.exists(WATCHLIST_FILE):
-        return []
+        with open(WATCHLIST_FILE, "w") as f:
+            json.dump(DEFAULT_WATCHLIST, f)
+        return DEFAULT_WATCHLIST.copy()
+
     with open(WATCHLIST_FILE, "r") as f:
-        return json.load(f).get("stocks", [])
+        return json.load(f)
 
 
-@st.cache_data(show_spinner=False)
-def load_universe():
-    df = load_nse_universe()
-    df["label"] = df["symbol"] + " — " + df["name"]
-    return df
+def save_watchlist(watchlist):
+    with open(WATCHLIST_FILE, "w") as f:
+        json.dump(sorted(set(watchlist)), f)
 
 
-watchlist = load_watchlist()
-universe = load_universe()
-
+# ============================================================
+# HEADER
+# ============================================================
 st.title("🧠 Explainable AI — Market Decisions")
 st.caption("Every AI decision explained in plain English")
 
-tabs = st.tabs(["🔍 Search", "📌 Watchlist", "🧠 Explanation"])
-
+# ============================================================
+# TABS
+# ============================================================
+tab_search, tab_watchlist, tab_add, tab_explain = st.tabs(
+    ["🔍 Search", "📌 Watchlist", "➕ Add Stock", "🧠 Explanation"]
+)
 
 # ============================================================
-# TAB 1 — SEARCH
+# 🔍 SEARCH TAB
 # ============================================================
-with tabs[0]:
-    choice = st.selectbox("Search stock", universe["label"].tolist())
-    symbol = choice.split(" — ")[0]
+with tab_search:
+    watchlist = load_watchlist()
 
-    res = analyze_stock(symbol)
+    symbol = st.selectbox(
+        "Search stock",
+        watchlist,
+        index=0
+    )
 
-    if res.get("Error"):
-        st.error(res["Error"])
-    else:
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Price", res["Last_Price"])
-        col2.metric("RSI", res["RSI"])
-        col3.metric("State", res["State"])
+    with st.spinner("Analyzing stock..."):
+        result = analyze_stock(symbol)
 
-        st.markdown("### 🧠 AI Explanation")
-        st.info(res["Explanation"])
+    col1, col2, col3 = st.columns(3)
 
+    col1.metric("Price", f"₹ {result['Price']}")
+    col2.metric("RSI", result["RSI"])
+    col3.metric("State", result["State"])
+
+    st.subheader("🧠 AI Explanation")
+    st.info(result["Explanation"])
+
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 # ============================================================
-# TAB 2 — WATCHLIST
+# 📌 WATCHLIST TAB
 # ============================================================
-with tabs[1]:
-    st.subheader("📌 Watchlist")
+with tab_watchlist:
+    st.subheader("📌 Your Watchlist")
+
+    watchlist = load_watchlist()
 
     if not watchlist:
-        st.info("No stocks added yet.")
+        st.info("No stocks in watchlist yet.")
     else:
-        for s in watchlist:
-            st.write(f"🔹 {s}")
-
+        for sym in watchlist:
+            st.write(f"🔹 {sym}")
 
 # ============================================================
-# TAB 3 — DEEP EXPLANATION
+# ➕ ADD STOCK TAB  (PHASE J)
 # ============================================================
-with tabs[2]:
-    st.subheader("🔍 Why did AI make this decision?")
+with tab_add:
+    st.subheader("➕ Add stock to watchlist")
 
-    stock = st.selectbox("Choose stock", watchlist)
+    new_stock = st.text_input(
+        "Enter Yahoo Finance symbol",
+        placeholder="Example: HDFCBANK.NS"
+    )
 
-    if stock:
-        res = analyze_stock(stock)
-        if res.get("Error"):
-            st.error(res["Error"])
+    if st.button("Add to Watchlist"):
+        if not new_stock:
+            st.warning("Please enter a symbol.")
         else:
-            st.success(f"**Market Regime:** {res['State']}")
-            st.write("**Explanation:**")
-            st.write(res["Explanation"])
+            watchlist = load_watchlist()
+            sym = new_stock.upper().strip()
 
-            if res["High_Risk"]:
-                st.warning("⚠️ Risk is elevated due to weak conviction")
+            if sym in watchlist:
+                st.warning("Stock already exists in watchlist.")
             else:
-                st.success("✅ Risk level acceptable")
+                watchlist.append(sym)
+                save_watchlist(watchlist)
+                st.success(f"{sym} added successfully!")
+                st.rerun()
 
-            st.caption(f"Updated: {res['Last_Updated']}")
+# ============================================================
+# 🧠 EXPLANATION TAB
+# ============================================================
+with tab_explain:
+    st.subheader("🧠 Why did the AI make this decision?")
+
+    watchlist = load_watchlist()
+    symbol = st.selectbox("Choose stock", watchlist)
+
+    result = analyze_stock(symbol)
+
+    st.success(f"Market Regime: {result['State']}")
+
+    st.markdown("**Explanation:**")
+    st.write(result["Explanation"])
+
+    risk_msg = "⚠️ High Risk" if result["High_Risk"] else "✅ Risk level acceptable"
+    st.info(risk_msg)
 
