@@ -3,6 +3,8 @@ import sys
 import yaml
 import streamlit as st
 import pandas as pd
+from datetime import datetime
+import pytz
 
 # ------------------------------------------------------------
 # ENSURE ROOT PATH (STREAMLIT CLOUD SAFE)
@@ -11,20 +13,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from main import analyze_stock  # ONLY import what exists
-
-# ------------------------------------------------------------
-# CONFIG (OPTIONAL, CLOUD SAFE)
-# ------------------------------------------------------------
-CONFIG = {}
-CONFIG_PATH = "config.yaml"
-
-if os.path.exists(CONFIG_PATH):
-    try:
-        with open(CONFIG_PATH, "r") as f:
-            CONFIG = yaml.safe_load(f) or {}
-    except Exception:
-        CONFIG = {}
+from main import analyze_stock
 
 # ------------------------------------------------------------
 # STREAMLIT PAGE SETUP
@@ -35,12 +24,12 @@ st.set_page_config(
 )
 
 st.title("📊 AI Stock Portfolio Analytics")
-st.caption("Cloud-safe | Explainable | NSE/BSE Ready")
+st.caption("Live price • RSI • Cloud-safe • NSE Ready")
 
 # ------------------------------------------------------------
 # SIDEBAR — STOCK INPUT
 # ------------------------------------------------------------
-st.sidebar.header("Stock Selection")
+st.sidebar.header("🔍 Stock Selection")
 
 default_stocks = [
     "RELIANCE.NS",
@@ -50,28 +39,35 @@ default_stocks = [
     "ICICIBANK.NS"
 ]
 
-symbols = st.sidebar.text_area(
+symbols_text = st.sidebar.text_area(
     "Enter stock symbols (comma-separated)",
     value=",".join(default_stocks),
     help="Example: RELIANCE.NS, TCS.NS"
 )
 
-symbols = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+symbols = [s.strip().upper() for s in symbols_text.split(",") if s.strip()]
 
-run_btn = st.sidebar.button("Run Analysis")
+run_btn = st.sidebar.button("▶ Run Analysis")
+
+# ------------------------------------------------------------
+# CACHED ANALYSIS (PER STOCK)
+# ------------------------------------------------------------
+@st.cache_data(ttl=300)  # cache for 5 minutes
+def cached_analyze(symbol):
+    return analyze_stock(symbol)
 
 # ------------------------------------------------------------
 # MAIN LOGIC
 # ------------------------------------------------------------
 if run_btn and symbols:
-    st.subheader("📈 Analysis Results")
+    st.subheader("📈 Stock Analysis")
 
     results = []
 
     for sym in symbols:
         with st.spinner(f"Analyzing {sym}..."):
             try:
-                res = analyze_stock(sym)
+                res = cached_analyze(sym)
                 if res:
                     results.append(res)
                 else:
@@ -82,10 +78,18 @@ if run_btn and symbols:
     if results:
         df = pd.DataFrame(results)
 
+        # ----------------------------------------------------
+        # LIVE PRICE + TIME (DISPLAY)
+        # ----------------------------------------------------
+        ist = pytz.timezone("Asia/Kolkata")
+        now_ist = datetime.now(ist).strftime("%d %b %Y • %I:%M %p IST")
+
+        st.markdown(f"🕒 **Last Updated:** {now_ist}")
+
         st.dataframe(df, use_container_width=True)
 
         # ----------------------------------------------------
-        # PORTFOLIO HEALTH SCORE (SIMPLE, SAFE)
+        # PORTFOLIO HEALTH SCORE
         # ----------------------------------------------------
         score = 0
         max_score = len(df) * 20
@@ -112,5 +116,5 @@ if run_btn and symbols:
         st.warning("No valid stocks analyzed.")
 
 else:
-    st.info("Enter stock symbols and click **Run Analysis**")
+    st.info("👈 Enter stock symbols and click **Run Analysis**")
 
