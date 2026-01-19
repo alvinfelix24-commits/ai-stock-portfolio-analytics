@@ -4,4 +4,4 @@ pandas
 numpy
 matplotlib
 pyyaml
-
+scikit-learn
