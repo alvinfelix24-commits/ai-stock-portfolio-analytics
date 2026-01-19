@@ -1,70 +1,215 @@
 import streamlit as st
 import pandas as pd
+import yaml
 import matplotlib.pyplot as plt
-from src.main import analyze_stock, backtest_regime
+import os
+import requests
 
-
-st.set_page_config(page_title="AI Stock Intelligence", layout="wide")
-st.title("🧠 AI Stock Intelligence Platform")
-
-tab1, tab2, tab3 = st.tabs(
-    ["📊 Live AI", "🔍 Explainability", "📈 Backtest"]
-)
+from src.main import analyze_stock, analyze_portfolio, fetch_data
 
 
 # ============================================================
-# TAB 1 — LIVE AI
+# PATHS
 # ============================================================
-with tab1:
-    symbol = st.text_input("Stock Symbol", "RELIANCE.NS")
-
-    res = analyze_stock(symbol)
-
-    if res:
-        st.metric("Last Price", res["Last_Traded_Price"])
-        st.metric("Market Regime", res["AI_Market_Regime"])
-        st.metric("AI Confidence", res["AI_Confidence"])
-        st.metric("RSI", res["RSI"])
+STOCK_FILE = "data_all_stocks.csv"
 
 
 # ============================================================
-# TAB 3 — BACKTEST
+# LOAD CONFIG
+# ============================================================
+with open("config.yaml", "r") as f:
+    CONFIG = yaml.safe_load(f)
+
+
+# ============================================================
+# LOAD / INIT STOCK UNIVERSE
+# ============================================================
+if not os.path.exists(STOCK_FILE):
+    pd.DataFrame(columns=["Symbol", "Name", "Exchange"]).to_csv(STOCK_FILE, index=False)
+
+ALL_STOCKS = pd.read_csv(STOCK_FILE)
+
+
+# ============================================================
+# YAHOO AUTOCOMPLETE
+# ============================================================
+@st.cache_data(ttl=3600)
+def yahoo_autocomplete(query):
+    url = "https://query1.finance.yahoo.com/v1/finance/search"
+    r = requests.get(url, params={"q": query, "quotesCount": 10}, timeout=5)
+    if r.status_code != 200:
+        return []
+
+    out = []
+    for q in r.json().get("quotes", []):
+        s = q.get("symbol", "")
+        if s.endswith(".NS") or s.endswith(".BO"):
+            out.append({
+                "Symbol": s,
+                "Name": q.get("shortname", ""),
+                "Exchange": q.get("exchange", "")
+            })
+    return out
+
+
+# ============================================================
+# STREAMLIT SETUP
+# ============================================================
+st.set_page_config(page_title="AI Stock Analytics", layout="wide")
+st.title("📈 AI Stock Analytics")
+st.caption("Groww-style UX • AI Screener • Yahoo Finance (Delayed)")
+
+
+# ============================================================
+# TABS
+# ============================================================
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Single Stock",
+    "⚖️ Compare Stocks",
+    "➕ Add Stock",
+    "🧠 AI Screener"
+])
+
+
+# ============================================================
+# TAB 3 — ADD STOCK (AUTOCOMPLETE)
 # ============================================================
 with tab3:
-    st.subheader("📈 AI Regime Backtest (Signal Validation)")
+    st.subheader("➕ Add Stock (Yahoo Search)")
+    q = st.text_input("Search company or symbol")
 
-    st.info(
-        "This backtest evaluates **signal accuracy**, not trading returns.\n\n"
-        "Forward window: 5 days"
-    )
+    if q:
+        matches = yahoo_autocomplete(q)
+        if not matches:
+            st.info("No Yahoo-supported NSE/BSE symbols found.")
+        for m in matches:
+            col1, col2 = st.columns([4, 1])
+            col1.write(f"**{m['Symbol']}** — {m['Name']}")
+            if col2.button("Add", key=m["Symbol"]):
+                if m["Symbol"] in ALL_STOCKS["Symbol"].values:
+                    st.warning("Already exists.")
+                else:
+                    ALL_STOCKS = pd.concat(
+                        [ALL_STOCKS, pd.DataFrame([m])],
+                        ignore_index=True
+                    )
+                    ALL_STOCKS.to_csv(STOCK_FILE, index=False)
+                    st.success(f"{m['Symbol']} added")
+                    st.rerun()
 
-    bt = backtest_regime(symbol)
 
-    if bt is None:
-        st.warning("Backtest unavailable.")
+# ============================================================
+# TAB 1 — SINGLE STOCK
+# ============================================================
+with tab1:
+    symbol = st.selectbox("Select Stock", ALL_STOCKS["Symbol"].tolist())
+    res = analyze_stock(symbol)
+
+    if res is None:
+        st.warning("Yahoo data not available for this stock.")
         st.stop()
 
-    accuracy = (bt["Signal"] == bt["Actual"]).mean() * 100
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Price (₹)", res["Last_Traded_Price"])
+    c2.metric("RSI", res["RSI"])
+    c3.metric("Regime", res["AI_Market_Regime"])
+    c4.metric("Confidence", res["AI_Confidence"])
 
-    st.metric("Signal Accuracy (%)", round(accuracy, 2))
+    st.caption(f"Last update: {res['Last_Traded_Time']} (Delayed)")
 
-    st.subheader("Confusion Matrix")
-    cm = pd.crosstab(bt["Signal"], bt["Actual"])
 
-    fig, ax = plt.subplots()
-    ax.imshow(cm, cmap="Blues")
-    ax.set_xticks(range(len(cm.columns)))
-    ax.set_yticks(range(len(cm.index)))
-    ax.set_xticklabels(cm.columns)
-    ax.set_yticklabels(cm.index)
+# ============================================================
+# TAB 2 — COMPARISON
+# ============================================================
+with tab2:
+    st.subheader("⚖️ Compare")
+    a = st.selectbox("Stock A", ALL_STOCKS["Symbol"].tolist(), key="a")
+    b = st.selectbox("Stock B", ALL_STOCKS["Symbol"].tolist(), key="b")
 
-    for i in range(len(cm.index)):
-        for j in range(len(cm.columns)):
-            ax.text(j, i, cm.iloc[i, j], ha="center", va="center")
+    ra, rb = analyze_stock(a), analyze_stock(b)
+    if ra is None or rb is None:
+        st.warning("Insufficient Yahoo data.")
+        st.stop()
 
-    ax.set_xlabel("Actual Outcome")
-    ax.set_ylabel("AI Signal")
-    st.pyplot(fig)
+    def show(col, r):
+        col.metric("Price", r["Last_Traded_Price"])
+        col.metric("RSI", r["RSI"])
+        col.metric("Regime", r["AI_Market_Regime"])
+        col.metric("Confidence", r["AI_Confidence"])
 
-    st.caption("Diagonal dominance = better signal quality")
+    c1, c2 = st.columns(2)
+    show(c1, ra)
+    show(c2, rb)
+
+
+# ============================================================
+# TAB 4 — AI SCREENER (NEW)
+# ============================================================
+with tab4:
+    st.subheader("🧠 AI Screener")
+
+    regime = st.multiselect(
+        "Market Regime",
+        ["Bullish", "Sideways", "Bearish"],
+        default=["Bullish"]
+    )
+
+    rsi_min, rsi_max = st.slider(
+        "RSI Range",
+        0, 100, (30, 70)
+    )
+
+    min_conf = st.slider(
+        "Minimum AI Confidence",
+        0, 100, 50
+    )
+
+    exclude_high_risk = st.checkbox("Exclude High-Risk Stocks", value=True)
+
+    if st.button("Run AI Screener"):
+        results = []
+
+        with st.spinner("Running AI across stocks..."):
+            for s in ALL_STOCKS["Symbol"]:
+                r = analyze_stock(s)
+                if r is None:
+                    continue
+
+                if r["AI_Market_Regime"] not in regime:
+                    continue
+                if not (rsi_min <= r["RSI"] <= rsi_max):
+                    continue
+                if r["AI_Confidence"] < min_conf:
+                    continue
+                if exclude_high_risk and r["High_Risk"]:
+                    continue
+
+                results.append(r)
+
+        if not results:
+            st.warning("No stocks matched the AI criteria.")
+        else:
+            df = pd.DataFrame(results)
+            st.success(f"{len(df)} stocks matched")
+            st.dataframe(df, use_container_width=True)
+
+
+# ============================================================
+# PORTFOLIO AI
+# ============================================================
+st.divider()
+st.subheader("🧩 AI Portfolio Brain")
+
+p = analyze_portfolio()
+risk = p["AI_Portfolio_Risk_Level"]
+
+if risk == "HIGH":
+    st.error(f"⚠️ Portfolio Risk: {risk}")
+elif risk == "MEDIUM":
+    st.warning(f"⚠️ Portfolio Risk: {risk}")
+else:
+    st.success(f"✅ Portfolio Risk: {risk}")
+
+for i in p["AI_Portfolio_Insights"]:
+    st.write("•", i)
 
