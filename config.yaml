@@ -1,0 +1,23 @@
+portfolio:
+  - RELIANCE.NS
+  - TCS.NS
+  - INFY.NS
+  - HDFCBANK.NS
+  - ICICIBANK.NS
+
+sectors:
+  RELIANCE.NS: Energy
+  TCS.NS: IT
+  INFY.NS: IT
+  HDFCBANK.NS: Banking
+  ICICIBANK.NS: Banking
+
+data:
+  period: "1y"
+  interval: "1d"
+  min_rows: 60
+
+indicators:
+  rsi_window: 14
+  ma_window: 20
+

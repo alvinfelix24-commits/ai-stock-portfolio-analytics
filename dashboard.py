@@ -1,120 +1,93 @@
-import os
-import sys
-import yaml
+# dashboard.py — Explainable AI View
+
 import streamlit as st
-import pandas as pd
-from datetime import datetime
-import pytz
+import json
+import os
+from main import analyze_stock, load_nse_universe
 
-# ------------------------------------------------------------
-# ENSURE ROOT PATH (STREAMLIT CLOUD SAFE)
-# ------------------------------------------------------------
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
+st.set_page_config(page_title="Explainable AI Stocks", layout="wide")
 
-from main import analyze_stock
+WATCHLIST_FILE = "watchlist.json"
 
-# ------------------------------------------------------------
-# STREAMLIT PAGE SETUP
-# ------------------------------------------------------------
-st.set_page_config(
-    page_title="AI Stock Portfolio Analytics",
-    layout="wide"
-)
 
-st.title("📊 AI Stock Portfolio Analytics")
-st.caption("Live price • RSI • Cloud-safe • NSE Ready")
+def load_watchlist():
+    if not os.path.exists(WATCHLIST_FILE):
+        return []
+    with open(WATCHLIST_FILE, "r") as f:
+        return json.load(f).get("stocks", [])
 
-# ------------------------------------------------------------
-# SIDEBAR — STOCK INPUT
-# ------------------------------------------------------------
-st.sidebar.header("🔍 Stock Selection")
 
-default_stocks = [
-    "RELIANCE.NS",
-    "TCS.NS",
-    "INFY.NS",
-    "HDFCBANK.NS",
-    "ICICIBANK.NS"
-]
+@st.cache_data(show_spinner=False)
+def load_universe():
+    df = load_nse_universe()
+    df["label"] = df["symbol"] + " — " + df["name"]
+    return df
 
-symbols_text = st.sidebar.text_area(
-    "Enter stock symbols (comma-separated)",
-    value=",".join(default_stocks),
-    help="Example: RELIANCE.NS, TCS.NS"
-)
 
-symbols = [s.strip().upper() for s in symbols_text.split(",") if s.strip()]
+watchlist = load_watchlist()
+universe = load_universe()
 
-run_btn = st.sidebar.button("▶ Run Analysis")
+st.title("🧠 Explainable AI — Market Decisions")
+st.caption("Every AI decision explained in plain English")
 
-# ------------------------------------------------------------
-# CACHED ANALYSIS (PER STOCK)
-# ------------------------------------------------------------
-@st.cache_data(ttl=300)  # cache for 5 minutes
-def cached_analyze(symbol):
-    return analyze_stock(symbol)
+tabs = st.tabs(["🔍 Search", "📌 Watchlist", "🧠 Explanation"])
 
-# ------------------------------------------------------------
-# MAIN LOGIC
-# ------------------------------------------------------------
-if run_btn and symbols:
-    st.subheader("📈 Stock Analysis")
 
-    results = []
+# ============================================================
+# TAB 1 — SEARCH
+# ============================================================
+with tabs[0]:
+    choice = st.selectbox("Search stock", universe["label"].tolist())
+    symbol = choice.split(" — ")[0]
 
-    for sym in symbols:
-        with st.spinner(f"Analyzing {sym}..."):
-            try:
-                res = cached_analyze(sym)
-                if res:
-                    results.append(res)
-                else:
-                    st.warning(f"No data for {sym}")
-            except Exception as e:
-                st.error(f"{sym}: {e}")
+    res = analyze_stock(symbol)
 
-    if results:
-        df = pd.DataFrame(results)
-
-        # ----------------------------------------------------
-        # LIVE PRICE + TIME (DISPLAY)
-        # ----------------------------------------------------
-        ist = pytz.timezone("Asia/Kolkata")
-        now_ist = datetime.now(ist).strftime("%d %b %Y • %I:%M %p IST")
-
-        st.markdown(f"🕒 **Last Updated:** {now_ist}")
-
-        st.dataframe(df, use_container_width=True)
-
-        # ----------------------------------------------------
-        # PORTFOLIO HEALTH SCORE
-        # ----------------------------------------------------
-        score = 0
-        max_score = len(df) * 20
-
-        for _, row in df.iterrows():
-            if row.get("State") == "Bullish":
-                score += 20
-            elif row.get("State") == "Sideways":
-                score += 10
-
-        pct = int((score / max_score) * 100) if max_score else 0
-
-        st.subheader("📊 Portfolio Health")
-        st.progress(pct)
-
-        if pct >= 70:
-            st.success(f"Strong portfolio ({pct}%)")
-        elif pct >= 40:
-            st.warning(f"Moderate portfolio ({pct}%)")
-        else:
-            st.error(f"Weak portfolio ({pct}%)")
-
+    if res.get("Error"):
+        st.error(res["Error"])
     else:
-        st.warning("No valid stocks analyzed.")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Price", res["Last_Price"])
+        col2.metric("RSI", res["RSI"])
+        col3.metric("State", res["State"])
 
-else:
-    st.info("👈 Enter stock symbols and click **Run Analysis**")
+        st.markdown("### 🧠 AI Explanation")
+        st.info(res["Explanation"])
+
+
+# ============================================================
+# TAB 2 — WATCHLIST
+# ============================================================
+with tabs[1]:
+    st.subheader("📌 Watchlist")
+
+    if not watchlist:
+        st.info("No stocks added yet.")
+    else:
+        for s in watchlist:
+            st.write(f"🔹 {s}")
+
+
+# ============================================================
+# TAB 3 — DEEP EXPLANATION
+# ============================================================
+with tabs[2]:
+    st.subheader("🔍 Why did AI make this decision?")
+
+    stock = st.selectbox("Choose stock", watchlist)
+
+    if stock:
+        res = analyze_stock(stock)
+        if res.get("Error"):
+            st.error(res["Error"])
+        else:
+            st.success(f"**Market Regime:** {res['State']}")
+            st.write("**Explanation:**")
+            st.write(res["Explanation"])
+
+            if res["High_Risk"]:
+                st.warning("⚠️ Risk is elevated due to weak conviction")
+            else:
+                st.success("✅ Risk level acceptable")
+
+            st.caption(f"Updated: {res['Last_Updated']}")
 

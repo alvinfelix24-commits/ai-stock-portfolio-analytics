@@ -1,146 +1,114 @@
-import os
+# main.py — Explainable AI Engine (Transparent Decisions)
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import yaml
+from datetime import datetime
+import os
+
+
+NSE_CACHE_FILE = "nse_universe.csv"
+
 
 # ============================================================
-# OPTIONAL CONFIG LOADING (CLOUD SAFE)
+# AUTO LOAD NSE UNIVERSE (CACHED)
 # ============================================================
-CONFIG_PATH = "config.yaml"
+def load_nse_universe():
+    if os.path.exists(NSE_CACHE_FILE):
+        return pd.read_csv(NSE_CACHE_FILE)
 
-config = {}
-if os.path.exists(CONFIG_PATH):
+    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    df = pd.read_csv(url)
+    df = df[["SYMBOL", "NAME OF COMPANY"]]
+    df.columns = ["symbol", "name"]
+    df["symbol"] = df["symbol"] + ".NS"
+
+    df.to_csv(NSE_CACHE_FILE, index=False)
+    return df
+
+
+# ============================================================
+# DATA FETCH
+# ============================================================
+def fetch_data(symbol, period="2y"):
+    df = yf.download(symbol, period=period, progress=False)
+    if df.empty:
+        return None
+    return df.dropna()
+
+
+# ============================================================
+# INDICATORS
+# ============================================================
+def compute_rsi(series, window=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window).mean()
+    avg_loss = loss.rolling(window).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+# ============================================================
+# EXPLAINABLE ANALYSIS
+# ============================================================
+def analyze_stock(symbol):
     try:
-        with open(CONFIG_PATH, "r") as f:
-            config = yaml.safe_load(f) or {}
-    except Exception:
-        config = {}
+        df = fetch_data(symbol)
+        if df is None or len(df) < 60:
+            return {"Error": "Insufficient data"}
 
+        df["MA20"] = df["Close"].rolling(20).mean()
+        df["RSI"] = compute_rsi(df["Close"])
 
-# ============================================================
-# INTERNAL HELPER — FORCE SCALAR
-# ============================================================
-def scalar(x):
-    """
-    Force pandas object to native Python scalar.
-    Raises if not exactly one value.
-    """
-    if hasattr(x, "item"):
-        return x.item()
-    return float(x)
+        last = df.iloc[-1]
+        close = float(last["Close"])
+        ma20 = float(last["MA20"])
+        rsi = float(last["RSI"])
 
+        reasons = []
 
-# ============================================================
-# LIVE AI ANALYSIS
-# ============================================================
-def analyze_stock(symbol, period="6mo"):
-    try:
-        df = yf.download(symbol, period=period, interval="1d", progress=False)
-
-        if df.empty:
-            return None
-
-        # ---- Flatten columns if needed (yfinance safety)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        close = df["Close"].astype(float)
-
-        df["MA20"] = close.rolling(20).mean()
-
-        delta = close.diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-
-        rs = avg_gain / avg_loss
-        df["RSI"] = 100 - (100 / (1 + rs))
-
-        # ---- Force scalars
-        close_v = scalar(close.iloc[-1])
-        ma20_v = scalar(df["MA20"].iloc[-1])
-        rsi_v = scalar(df["RSI"].iloc[-1])
-
-        if close_v > ma20_v and rsi_v > 55:
-            regime = "Bullish"
-        elif close_v < ma20_v and rsi_v < 45:
-            regime = "Bearish"
+        # --- Regime logic ---
+        if close > ma20 and rsi > 55:
+            state = "Bullish"
+            reasons.append("Price is above 20-day moving average")
+            reasons.append("RSI is above 55, indicating momentum strength")
+        elif close < ma20 and rsi < 45:
+            state = "Bearish"
+            reasons.append("Price is below 20-day moving average")
+            reasons.append("RSI is below 45, indicating weakness")
         else:
-            regime = "Sideways"
+            state = "Sideways"
+            reasons.append("Price and RSI show mixed signals")
 
-        confidence = min(abs(rsi_v - 50) * 2, 100)
+        # --- Confidence logic ---
+        confidence = round(abs(rsi - 50) * 2, 1)
+        if confidence >= 70:
+            reasons.append("Strong deviation from neutral RSI (high confidence)")
+        elif confidence >= 40:
+            reasons.append("Moderate RSI conviction")
+        else:
+            reasons.append("RSI close to neutral (low confidence)")
+
+        # --- Risk logic ---
+        high_risk = confidence < 40
+        if high_risk:
+            reasons.append("Low confidence increases risk")
+
+        explanation = " • ".join(reasons)
 
         return {
-            "Symbol": symbol,
-            "AI_Market_Regime": regime,
-            "AI_Confidence": round(confidence, 1),
-            "RSI": round(rsi_v, 2),
-            "Last_Traded_Price": round(close_v, 2),
-            "Date": df.index[-1]
+            "Stock": symbol,
+            "Last_Price": round(close, 2),
+            "RSI": round(rsi, 2),
+            "State": state,
+            "Confidence": confidence,
+            "High_Risk": high_risk,
+            "Explanation": explanation,
+            "Last_Updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
 
     except Exception as e:
-        print(f"Error analyzing {symbol}: {e}")
-        return None
-
-
-# ============================================================
-# BACKTEST ENGINE — SIGNAL VALIDATION
-# ============================================================
-def backtest_regime(symbol, lookahead_days=5):
-    df = yf.download(symbol, period="2y", interval="1d", progress=False)
-
-    if df.empty:
-        return None
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    close = df["Close"].astype(float)
-    df["MA20"] = close.rolling(20).mean()
-
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-
-    rs = avg_gain / avg_loss
-    df["RSI"] = 100 - (100 / (1 + rs))
-
-    results = []
-
-    for i in range(50, len(df) - lookahead_days):
-        close_v = scalar(close.iloc[i])
-        ma20_v = scalar(df["MA20"].iloc[i])
-        rsi_v = scalar(df["RSI"].iloc[i])
-
-        if close_v > ma20_v and rsi_v > 55:
-            signal = "Bullish"
-        elif close_v < ma20_v and rsi_v < 45:
-            signal = "Bearish"
-        else:
-            signal = "Sideways"
-
-        future_close = scalar(close.iloc[i + lookahead_days])
-        future_return = (future_close - close_v) / close_v
-
-        if future_return > 0.01:
-            actual = "Bullish"
-        elif future_return < -0.01:
-            actual = "Bearish"
-        else:
-            actual = "Sideways"
-
-        results.append({
-            "Signal": signal,
-            "Actual": actual,
-            "Return_%": round(future_return * 100, 2)
-        })
-
-    return pd.DataFrame(results)
+        return {"Error": str(e)}
 
