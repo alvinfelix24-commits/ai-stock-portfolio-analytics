@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import os
 import requests
 
-from main import analyze_stock,  fetch_data
+from main import analyze_stock
 
 
 # ============================================================
