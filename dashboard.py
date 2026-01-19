@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import requests
 
-from src.main import analyze_stock, analyze_portfolio, fetch_data
+from main import analyze_stock, analyze_portfolio, fetch_data
 
 
 # ============================================================
