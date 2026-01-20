@@ -1,114 +1,138 @@
-# main.py — Explainable AI Engine (Transparent Decisions)
-
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
-import os
-
-
-NSE_CACHE_FILE = "nse_universe.csv"
-
 
 # ============================================================
-# AUTO LOAD NSE UNIVERSE (CACHED)
+# HELPERS
 # ============================================================
-def load_nse_universe():
-    if os.path.exists(NSE_CACHE_FILE):
-        return pd.read_csv(NSE_CACHE_FILE)
+def scalar(x):
+    return float(x.iloc[0]) if hasattr(x, "iloc") else float(x)
 
-    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    df = pd.read_csv(url)
-    df = df[["SYMBOL", "NAME OF COMPANY"]]
-    df.columns = ["symbol", "name"]
-    df["symbol"] = df["symbol"] + ".NS"
-
-    df.to_csv(NSE_CACHE_FILE, index=False)
-    return df
-
-
-# ============================================================
-# DATA FETCH
-# ============================================================
-def fetch_data(symbol, period="2y"):
-    df = yf.download(symbol, period=period, progress=False)
-    if df.empty:
-        return None
-    return df.dropna()
-
-
-# ============================================================
-# INDICATORS
-# ============================================================
-def compute_rsi(series, window=14):
+def compute_rsi(series, period=14):
     delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window).mean()
-    avg_loss = loss.rolling(window).mean()
-    rs = avg_gain / avg_loss
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = -delta.clip(upper=0).rolling(period).mean()
+    rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+# ============================================================
+# CORE AI SIGNAL
+# ============================================================
+def ai_signal(price, ma20, rsi):
+    if price > ma20 and rsi > 55:
+        return "Bullish"
+    elif price < ma20 and rsi < 45:
+        return "Bearish"
+    return "Sideways"
 
 # ============================================================
-# EXPLAINABLE ANALYSIS
+# STOCK ANALYSIS
 # ============================================================
 def analyze_stock(symbol):
+    df = yf.download(symbol, period="6mo", interval="1d", progress=False)
+    if df.empty:
+        return None
+
+    df["MA20"] = df["Close"].rolling(20).mean()
+    df["RSI"] = compute_rsi(df["Close"])
+
+    last = df.iloc[-1]
+    price = scalar(last["Close"])
+    ma20 = scalar(last["MA20"])
+    rsi = scalar(last["RSI"])
+
+    signal = ai_signal(price, ma20, rsi)
+    confidence = round(abs(rsi - 50) * 1.5, 1)
+
+    return {
+        "Symbol": symbol,
+        "Price": round(price, 2),
+        "RSI": round(rsi, 2),
+        "State": signal,
+        "Confidence": confidence
+    }
+
+# ============================================================
+# OPTIONS SENTIMENT (READ-ONLY)
+# ============================================================
+def analyze_options_sentiment(symbol):
     try:
-        df = fetch_data(symbol)
-        if df is None or len(df) < 60:
-            return {"Error": "Insufficient data"}
+        t = yf.Ticker(symbol)
+        if not t.options:
+            return None
 
-        df["MA20"] = df["Close"].rolling(20).mean()
-        df["RSI"] = compute_rsi(df["Close"])
+        chain = t.option_chain(t.options[0])
+        call_oi = chain.calls["openInterest"].sum()
+        put_oi = chain.puts["openInterest"].sum()
 
-        last = df.iloc[-1]
-        close = float(last["Close"])
-        ma20 = float(last["MA20"])
-        rsi = float(last["RSI"])
+        if call_oi == 0:
+            return None
 
-        reasons = []
+        pcr = round(put_oi / call_oi, 2)
 
-        # --- Regime logic ---
-        if close > ma20 and rsi > 55:
-            state = "Bullish"
-            reasons.append("Price is above 20-day moving average")
-            reasons.append("RSI is above 55, indicating momentum strength")
-        elif close < ma20 and rsi < 45:
-            state = "Bearish"
-            reasons.append("Price is below 20-day moving average")
-            reasons.append("RSI is below 45, indicating weakness")
-        else:
-            state = "Sideways"
-            reasons.append("Price and RSI show mixed signals")
-
-        # --- Confidence logic ---
-        confidence = round(abs(rsi - 50) * 2, 1)
-        if confidence >= 70:
-            reasons.append("Strong deviation from neutral RSI (high confidence)")
-        elif confidence >= 40:
-            reasons.append("Moderate RSI conviction")
-        else:
-            reasons.append("RSI close to neutral (low confidence)")
-
-        # --- Risk logic ---
-        high_risk = confidence < 40
-        if high_risk:
-            reasons.append("Low confidence increases risk")
-
-        explanation = " • ".join(reasons)
+        sentiment = (
+            "Bullish" if pcr < 0.7 else
+            "Bearish" if pcr > 1.2 else
+            "Neutral"
+        )
 
         return {
-            "Stock": symbol,
-            "Last_Price": round(close, 2),
-            "RSI": round(rsi, 2),
-            "State": state,
-            "Confidence": confidence,
-            "High_Risk": high_risk,
-            "Explanation": explanation,
-            "Last_Updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "PCR": pcr,
+            "Options_Sentiment": sentiment
         }
 
-    except Exception as e:
-        return {"Error": str(e)}
+    except Exception:
+        return None
+
+# ============================================================
+# BACKTEST ENGINE
+# ============================================================
+def backtest_ai(symbol, lookahead=5):
+    df = yf.download(symbol, period="1y", interval="1d", progress=False)
+    if df.empty:
+        return None
+
+    df["MA20"] = df["Close"].rolling(20).mean()
+    df["RSI"] = compute_rsi(df["Close"])
+
+    wins = 0
+    losses = 0
+    returns = []
+
+    for i in range(25, len(df) - lookahead):
+        row = df.iloc[i]
+        future = df.iloc[i + lookahead]
+
+        price = scalar(row["Close"])
+        ma20 = scalar(row["MA20"])
+        rsi = scalar(row["RSI"])
+        future_price = scalar(future["Close"])
+
+        signal = ai_signal(price, ma20, rsi)
+        pct_change = (future_price - price) / price * 100
+
+        correct = False
+        if signal == "Bullish" and pct_change > 0:
+            correct = True
+        elif signal == "Bearish" and pct_change < 0:
+            correct = True
+        elif signal == "Sideways" and abs(pct_change) < 1.5:
+            correct = True
+
+        if correct:
+            wins += 1
+            returns.append(pct_change)
+        else:
+            losses += 1
+
+    total = wins + losses
+    accuracy = round((wins / total) * 100, 1) if total else 0
+    avg_return = round(np.mean(returns), 2) if returns else 0
+
+    return {
+        "Accuracy_%": accuracy,
+        "Wins": wins,
+        "Losses": losses,
+        "Avg_Return_%": avg_return
+    }
 
